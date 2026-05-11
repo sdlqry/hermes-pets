@@ -140,17 +140,26 @@ def _source_overlay_dir() -> Path:
 
 
 def _overlay_required_files() -> tuple[str, ...]:
-    return (
+    """Return overlay files required for the current platform."""
+    required = [
         "package.json",
         "src/main.js",
-        "src/main.windows.js",
         "src/preload.js",
         "src/renderer.html",
         "src/renderer.js",
         "src/renderer.css",
         "assets/manifest.json",
-        "scripts/launch-windows-overlay.ps1",
-    )
+    ]
+    # Windows/WSL require the Windows-specific launcher and entry point
+    if _is_wsl() or sys.platform == "win32":
+        required.extend([
+            "src/main.windows.js",
+            "scripts/launch-windows-overlay.ps1",
+        ])
+    # Linux requires the Linux launcher script
+    if _is_linux():
+        required.append("scripts/launch-linux-overlay.sh")
+    return tuple(required)
 
 
 def _is_overlay_runtime_dir(path: Path) -> bool:
@@ -352,6 +361,11 @@ def _is_wsl() -> bool:
         return False
 
 
+def _is_linux() -> bool:
+    """Detect native Linux (not WSL)."""
+    return sys.platform == "linux" and not _is_wsl()
+
+
 def _wsl_to_windows_path(path: Path) -> str:
     if not _is_wsl():
         return str(path)
@@ -382,6 +396,9 @@ def _detached_popen_kwargs() -> dict[str, object]:
         flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
         if flags:
             kwargs["creationflags"] = flags
+    elif _is_linux():
+        # Linux: create a new session so the child is fully detached
+        kwargs["start_new_session"] = True
     else:
         kwargs["start_new_session"] = True
     return kwargs
@@ -448,6 +465,35 @@ def _launch_bridge_and_overlay(args: argparse.Namespace) -> int:
     env["HERMES_PET_WS_URL"] = f"ws://{host}:{port}"
     env["HERMES_PET_POSITION_FILE"] = str(position_file)
 
+    # --- Linux native path: launch Electron directly ---
+    if _is_linux():
+        # Ensure DISPLAY is set for Electron GUI
+        if not env.get("DISPLAY"):
+            env["DISPLAY"] = ":0"
+        env["HERMES_PET_PLATFORM"] = "linux"
+
+        electron_bin = shutil.which("electron")
+        npx_bin = shutil.which("npx")
+        candidates: list[list[str]] = []
+        if electron_bin:
+            candidates.append([electron_bin, "src/main.js"])
+        if npx_bin:
+            candidates.append([npx_bin, "electron", "src/main.js"])
+
+        last_error: Exception | None = None
+        for cmd in candidates:
+            try:
+                subprocess.Popen(cmd, cwd=str(overlay_dir), env=env, **_detached_popen_kwargs())
+                print("🪟 Overlay launch requested (Linux native).")
+                return 0
+            except Exception as exc:
+                last_error = exc
+
+        if last_error is not None:
+            raise PetCLIError(f"Could not launch Electron overlay: {last_error}")
+        raise PetCLIError("Could not launch Electron overlay: neither 'electron' nor 'npx' was found.")
+
+    # --- Windows/WSL path: PowerShell launcher, fallback to Electron ---
     if _is_wsl() or sys.platform == "win32":
         script = overlay_dir / "scripts" / "launch-windows-overlay.ps1"
         if script.exists():
@@ -527,9 +573,82 @@ def _overlay_launcher_script() -> Path:
     return _overlay_dir() / "scripts" / "launch-windows-overlay.ps1"
 
 
+def _linux_overlay_launcher_script() -> Path:
+    return _overlay_dir() / "scripts" / "launch-linux-overlay.sh"
+
+
+def _overlay_process_ids() -> list[int]:
+    """Find PIDs of running Electron overlay processes (Linux)."""
+    if os.name == "nt":
+        return []
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,args="],
+            check=True, capture_output=True, text=True,
+        )
+    except Exception:
+        return []
+
+    current_pid = os.getpid()
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        pid_text, _, args = stripped.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid == current_pid:
+            continue
+        # Match Electron overlay processes (main.js or electron-overlay)
+        if ("main.js" in args or "hermes-pet-electron" in args or "electron-overlay" in args) and "electron" in args.lower():
+            pids.append(pid)
+    return pids
+
+
 def _run_overlay_launcher(*, port: int, mode: str) -> subprocess.CompletedProcess[str]:
+    # --- Linux native path ---
+    if _is_linux():
+        script = _linux_overlay_launcher_script()
+        if not script.exists():
+            # Fallback: use pgrep/pkill directly
+            if mode == "status":
+                pids = _overlay_process_ids()
+                stdout = f"Overlay: {'running (PID: ' + ', '.join(map(str, pids)) + ')' if pids else 'not running'}\n"
+                return subprocess.CompletedProcess(args=[], returncode=0 if pids else 1, stdout=stdout, stderr="")
+            elif mode == "stop":
+                pids = _overlay_process_ids()
+                for pid in pids:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        continue
+                    except OSError as exc:
+                        print(f"⚠️ Could not stop overlay process {pid}: {exc}", file=sys.stderr)
+                # Wait and force-kill if needed
+                time.sleep(1)
+                remaining = _overlay_process_ids()
+                for pid in remaining:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        continue
+                stdout = f"Stopped overlay processes: {len(pids)}\n"
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+            else:
+                raise PetCLIError(f"Unsupported overlay launcher mode: {mode}")
+
+        cmd = [str(script), mode]
+        try:
+            return subprocess.run(cmd, cwd=str(_overlay_dir()), capture_output=True, text=True, timeout=15)
+        except Exception as exc:
+            raise PetCLIError(f"Linux overlay launcher failed: {exc}") from exc
+
+    # --- Windows/WSL path ---
     if not (_is_wsl() or sys.platform == "win32"):
-        raise PetCLIError("Windows overlay process control is only available from Windows/WSL.")
+        raise PetCLIError("Overlay process control is not available on this platform.")
 
     script = _overlay_launcher_script()
     if not script.exists():
@@ -724,44 +843,97 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         )
     )
 
-    launcher = overlay_dir / "scripts" / "launch-windows-overlay.ps1"
+    # --- Overlay checks (platform-specific) ---
     checks.append(_doctor_line("overlay dir", overlay_dir.is_dir(), str(overlay_dir)))
-    checks.append(_doctor_line("overlay launcher", launcher.is_file(), str(launcher)))
-    if not (_is_wsl() or sys.platform == "win32"):
-        checks.append(_doctor_line("overlay-status", True, "Windows overlay process query not available on this OS"))
-    elif not launcher.is_file():
-        checks.append(_doctor_line("overlay-status", False, "launcher script missing"))
-    else:
-        ps_launcher = None
-        ps_candidates = ("powershell.exe",) if _is_wsl() else ("powershell.exe", "pwsh", "powershell")
-        for candidate in ps_candidates:
-            if shutil.which(candidate):
-                ps_launcher = candidate
-                break
-        if not ps_launcher:
-            checks.append(_doctor_line("overlay-status", False, "PowerShell launcher not found"))
+
+    if _is_linux():
+        # Linux-specific overlay checks
+        linux_launcher = _linux_overlay_launcher_script()
+        checks.append(_doctor_line("overlay launcher (linux)", linux_launcher.is_file(), str(linux_launcher)))
+
+        # DISPLAY environment variable
+        display = os.environ.get("DISPLAY", "")
+        checks.append(
+            _doctor_line(
+                "DISPLAY",
+                bool(display),
+                display or "(not set; Electron GUI requires DISPLAY)",
+            )
+        )
+
+        # Desktop environment
+        desktop = os.environ.get("XDG_CURRENT_DESKTOP", os.environ.get("DESKTOP_SESSION", "unknown"))
+        checks.append(_doctor_line("desktop session", True, desktop))
+
+        # Display server (X11 vs Wayland)
+        wayland = os.environ.get("WAYLAND_DISPLAY", "")
+        display_server = "Wayland (experimental)" if wayland else ("X11" if display else "unknown")
+        checks.append(
+            _doctor_line(
+                "display server",
+                True,
+                display_server,
+            )
+        )
+
+        # Electron binary
+        electron_bin = shutil.which("electron") or shutil.which("npx")
+        checks.append(
+            _doctor_line(
+                "electron",
+                bool(electron_bin),
+                electron_bin or "not found; run: cd overlay && npm install",
+            )
+        )
+
+        # Overlay process status
+        overlay_pids = _overlay_process_ids()
+        checks.append(
+            _doctor_line(
+                "overlay process",
+                bool(overlay_pids),
+                f"running (PID: {', '.join(map(str, overlay_pids))})" if overlay_pids else "not running",
+            )
+        )
+
+    elif _is_wsl() or sys.platform == "win32":
+        launcher = overlay_dir / "scripts" / "launch-windows-overlay.ps1"
+        checks.append(_doctor_line("overlay launcher", launcher.is_file(), str(launcher)))
+        if not launcher.is_file():
+            checks.append(_doctor_line("overlay-status", False, "launcher script missing"))
         else:
-            status_cmd = [
-                ps_launcher,
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                _wsl_to_windows_path(launcher),
-                "-RepoPath",
-                _wsl_to_windows_path(overlay_dir),
-                "-Port",
-                str(port),
-                "-Status",
-            ]
-            try:
-                status_result = subprocess.run(status_cmd, cwd=str(_repo_root()), capture_output=True, text=True, timeout=10)
-            except Exception as exc:
-                checks.append(_doctor_line("overlay-status", False, f"query failed: {exc}"))
+            ps_launcher = None
+            ps_candidates = ("powershell.exe",) if _is_wsl() else ("powershell.exe", "pwsh", "powershell")
+            for candidate in ps_candidates:
+                if shutil.which(candidate):
+                    ps_launcher = candidate
+                    break
+            if not ps_launcher:
+                checks.append(_doctor_line("overlay-status", False, "PowerShell launcher not found"))
             else:
-                detail = _truncate_text((status_result.stdout or status_result.stderr or "query completed").strip(), 120)
-                checks.append(_doctor_line("overlay-status", status_result.returncode == 0, detail))
+                status_cmd = [
+                    ps_launcher,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    _wsl_to_windows_path(launcher),
+                    "-RepoPath",
+                    _wsl_to_windows_path(overlay_dir),
+                    "-Port",
+                    str(port),
+                    "-Status",
+                ]
+                try:
+                    status_result = subprocess.run(status_cmd, cwd=str(_repo_root()), capture_output=True, text=True, timeout=10)
+                except Exception as exc:
+                    checks.append(_doctor_line("overlay-status", False, f"query failed: {exc}"))
+                else:
+                    detail = _truncate_text((status_result.stdout or status_result.stderr or "query completed").strip(), 120)
+                    checks.append(_doctor_line("overlay-status", status_result.returncode == 0, detail))
+    else:
+        checks.append(_doctor_line("overlay launcher", False, "no launcher available for this platform"))
 
     try:
         state_dir.mkdir(parents=True, exist_ok=True)
