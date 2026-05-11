@@ -127,10 +127,12 @@ function verifyRendererSnapshot(reason) {
 // ─── Window helpers ─────────────────────────────────────────────────
 function bringOverlayToFront(reason) {
   if (!win) return;
+  const currentPlatform = parsedArgs.platform || process.platform;
   try {
     if (win.isMinimized()) win.restore();
     if (!win.isVisible()) win.showInactive();
-    reassertOverlayOnTop(reason);
+    if (currentPlatform === 'linux') linuxSetAbove(reason);
+    else reassertOverlayOnTop(reason);
   } catch (e) {
     console.warn(`[pet-overlay] failed to show existing overlay after ${reason}: ${e.message}`);
   }
@@ -206,6 +208,22 @@ function reassertOverlayOnTop(reason) {
     console.log(`[pet-overlay] reasserted always-on-top (${ALWAYS_ON_TOP_LEVEL}) after ${reason}`);
   } catch (e) {
     console.warn(`[pet-overlay] failed to reassert always-on-top after ${reason}: ${e.message}`);
+  }
+}
+
+// On Linux GNOME: use xprop to set _NET_WM_STATE_ABOVE instead of Electron's
+// setAlwaysOnTop, which triggers override-redirect and makes the window invisible.
+function linuxSetAbove(reason) {
+  if (!win) return;
+  try {
+    const wid = String(win.getNativeWindowHandle().readUInt32LE());
+    require('child_process').execSync(
+      `xprop -id ${wid} -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_ABOVE`,
+      { stdio: 'pipe', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } }
+    );
+    debugEvent(`linux ABOVE set after ${reason}`);
+  } catch (e) {
+    console.warn(`[pet-overlay] linux ABOVE failed after ${reason}: ${e.message}`);
   }
 }
 
@@ -299,15 +317,13 @@ function createWindow() {
   console.log(`[pet-overlay] always-on-top level ${ALWAYS_ON_TOP_LEVEL}`);
   if (clickThrough) console.log('[pet-overlay] click-through enabled');
 
-  // Linux GNOME: transparent background causes rendering issues (compositor may skip window).
-  // Use a solid background matching the renderer CSS, which already handles transparency via CSS.
   const isLinux = currentPlatform === 'linux';
   const windowOptions = {
     ...WINDOW_SIZE,
     x: pos.x,
     y: pos.y,
     title: PET_TITLE,
-    transparent: !isLinux,
+    transparent: true,
     frame: false,
     skipTaskbar: true,
     // On Linux GNOME: do NOT set alwaysOnTop in BrowserWindow options — it triggers
@@ -318,7 +334,7 @@ function createWindow() {
     focusable,
     hasShadow: !isLinux,
     resizable: false,
-    backgroundColor: isLinux ? '#1e1e2e' : '#00000000',
+    backgroundColor: '#00000000',
     show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   };
@@ -352,24 +368,37 @@ function createWindow() {
 
   win.once('ready-to-show', () => {
     console.log(`[pet-overlay] final window bounds ${JSON.stringify(win.getBounds())}`);
-    win.showInactive();
     if (currentPlatform === 'linux') {
-      // On GNOME: avoid override-redirect by using xprop to set ABOVE state
-      // instead of Electron's built-in alwaysOnTop which triggers OR.
-      // Also remove _NET_WM_BYPASS_COMPOSITOR which GNOME sets on transparent windows.
+      // On GNOME: Electron sets _NET_WM_BYPASS_COMPOSITOR=2 for transparent windows,
+      // which tells Mutter to skip compositing → window invisible.
+      // Fix: remove BYPASS_COMPOSITOR BEFORE showing, then set ABOVE via xprop.
       try {
         const { execSync } = require('child_process');
         const wid = String(win.getNativeWindowHandle().readUInt32LE());
-        // Use xprop to set _NET_WM_STATE_ABOVE and clear BYPASS_COMPOSITOR
-        execSync(`xprop -id ${wid} -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_ABOVE`, { stdio: 'pipe', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
-        execSync(`xprop -id ${wid} -remove _NET_WM_BYPASS_COMPOSITOR`, { stdio: 'pipe', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
-        console.log('[pet-overlay] linux: set ABOVE via xprop, removed BYPASS_COMPOSITOR');
+        const display = process.env.DISPLAY || ':0';
+        const xpropEnv = { ...process.env, DISPLAY: display };
+        const xprop = (args) => execSync(`xprop -id ${wid} ${args}`, { stdio: 'pipe', env: xpropEnv });
+        // Remove BYPASS_COMPOSITOR before show — this is the critical fix
+        try { xprop('-remove _NET_WM_BYPASS_COMPOSITOR'); } catch (_) {}
+        // Now show the window
+        win.showInactive();
+        // Set ABOVE state via xprop (avoids Electron's override-redirect)
+        try { xprop('-f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_ABOVE'); } catch (_) {}
+        console.log('[pet-overlay] linux: removed BYPASS_COMPOSITOR, set ABOVE via xprop');
+        // Re-verify after 500ms — GNOME may re-apply BYPASS_COMPOSITOR
+        setTimeout(() => {
+          try {
+            xprop('-remove _NET_WM_BYPASS_COMPOSITOR');
+            console.log('[pet-overlay] linux: re-verified BYPASS_COMPOSITOR removal');
+          } catch (_) {}
+        }, 500);
       } catch (e) {
-        console.warn(`[pet-overlay] linux ABOVE workaround failed: ${e.message}`);
-        // Fallback: try Electron's API anyway
+        console.warn(`[pet-overlay] linux transparency workaround failed: ${e.message}`);
+        win.showInactive();
         reassertOverlayOnTop('ready-to-show (linux fallback)');
       }
     } else {
+      win.showInactive();
       reassertOverlayOnTop('ready-to-show');
     }
     if (clickThrough) win.setIgnoreMouseEvents(true, { forward: true });
@@ -382,9 +411,9 @@ function createWindow() {
     if (moveTimeout) clearTimeout(moveTimeout);
     moveTimeout = setTimeout(persistWindowPosition, 500);
   });
-  win.on('blur', () => reassertOverlayOnTop('blur'));
-  win.on('show', () => reassertOverlayOnTop('show'));
-  win.on('restore', () => reassertOverlayOnTop('restore'));
+  win.on('blur', () => { if (currentPlatform === 'linux') linuxSetAbove('blur'); else reassertOverlayOnTop('blur'); });
+  win.on('show', () => { if (currentPlatform === 'linux') linuxSetAbove('show'); else reassertOverlayOnTop('show'); });
+  win.on('restore', () => { if (currentPlatform === 'linux') linuxSetAbove('restore'); else reassertOverlayOnTop('restore'); });
   win.on('closed', () => { dragState = null; win = null; });
 }
 
@@ -404,7 +433,7 @@ app.on('window-all-closed', () => {
 ipcMain.on('minimize-pet', () => { if (win) win.setSize(80, 80); });
 ipcMain.on('restore-pet', () => { if (win) win.setSize(WINDOW_SIZE.width, WINDOW_SIZE.height); });
 ipcMain.on('hide-pet', () => { if (win) win.hide(); });
-ipcMain.on('show-pet', () => { if (win) { win.showInactive(); reassertOverlayOnTop('show-pet'); } });
+ipcMain.on('show-pet', () => { if (win) { win.showInactive(); if (currentPlatform === 'linux') linuxSetAbove('show-pet'); else reassertOverlayOnTop('show-pet'); } });
 
 ipcMain.on('pet-drag-start', (_, point) => {
   if (!win || process.env.HERMES_PET_CLICK_THROUGH === '1') return;
@@ -430,7 +459,8 @@ ipcMain.on('pet-drag-end', () => {
   if (!win || !dragState) return;
   dragState = null;
   persistWindowPosition();
-  reassertOverlayOnTop('drag-end');
+  if (currentPlatform === 'linux') linuxSetAbove('drag-end');
+  else reassertOverlayOnTop('drag-end');
   if (DEBUG_DRAG) console.log(`[pet-overlay/drag] end ${JSON.stringify(win.getBounds())}`);
 });
 
