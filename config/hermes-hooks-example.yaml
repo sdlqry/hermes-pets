@@ -1,0 +1,62 @@
+# ==========================================================================
+# Hermes Pets Hook Configuration
+# ==========================================================================
+# Add this block to your ~/.hermes/config.yaml to connect Hermes Agent
+# hooks to your Hermes Pets desktop companion.
+#
+# Each entry maps a Hermes hook event to the bridge script.
+# The script reads JSON from stdin, detects emotion, and pushes events
+# to the running hermes-pet bridge.
+#
+# After adding this config, run: hermes hooks list
+# On first run, Hermes will prompt you to approve each hook.
+# To auto-approve, set HERMES_ACCEPT_HOOKS=1 or add
+#   hooks_auto_accept: true
+# to your config.yaml.
+# ==========================================================================
+
+hooks:
+  # ── Session lifecycle ──────────────────────────────────────────────
+  on_session_start:
+    - command: /home/ai-server/GitHubProjects/hermes-pets/scripts/hermes-hook-bridge.sh
+      timeout: 5
+
+  on_session_end:
+    - command: /home/ai-server/GitHubProjects/hermes-pets/scripts/hermes-hook-bridge.sh
+      timeout: 5
+
+  on_session_reset:
+    - command: /home/ai-server/GitHubProjects/hermes-pets/scripts/hermes-hook-bridge.sh
+      timeout: 5
+
+  # ── LLM lifecycle (one per turn — good frequency) ──────────────────
+  pre_llm_call:
+    - command: /home/ai-server/GitHubProjects/hermes-pets/scripts/hermes-hook-bridge.sh
+      timeout: 5
+
+  post_llm_call:
+    - command: /home/ai-server/GitHubProjects/hermes-pets/scripts/hermes-hook-bridge.sh
+      timeout: 5
+
+  # ── Tool calls (per-tool granularity — more events) ────────────────
+  # Uncomment these if you want per-tool-call pet reactions.
+  # WARNING: Hermes may call 10+ tools per turn. This means 10+ script
+  # invocations. Each takes ~2-5ms, so total overhead is ~20-50ms.
+  #
+  # pre_tool_call:
+  #   - command: /home/ai-server/GitHubProjects/hermes-pets/scripts/hermes-hook-bridge.sh
+  #     timeout: 5
+  #
+  # post_tool_call:
+  #   - command: /home/ai-server/GitHubProjects/hermes-pets/scripts/hermes-hook-bridge.sh
+  #     timeout: 5
+
+  # ── Approval flow ──────────────────────────────────────────────────
+  post_approval_response:
+    - command: /home/ai-server/GitHubProjects/hermes-pets/scripts/hermes-hook-bridge.sh
+      timeout: 5
+
+  # ── Subagent lifecycle ─────────────────────────────────────────────
+  subagent_stop:
+    - command: /home/ai-server/GitHubProjects/hermes-pets/scripts/hermes-hook-bridge.sh
+      timeout: 5
