@@ -50,6 +50,30 @@ json_extract_string() {
     echo "$json" | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
 }
 
+# Extract a string field from JSON, searching both top-level and "extra" nested object.
+# Hermes shell hooks wrap hook-specific fields inside an "extra" object:
+#   {"hook_event_name": "post_llm_call", "tool_name": null, "extra": {"assistant_response": "..."}}
+# Usage: extract_field "$json" "assistant_response"
+extract_field() {
+    local json="$1" key="$2"
+    local val
+    # Try top-level first
+    val=$(json_extract_string "$json" "$key")
+    if [[ -n "$val" ]]; then
+        echo "$val"
+        return
+    fi
+    # Hermes puts hook-specific kwargs inside "extra": {...}
+    # Extract the "extra" substring and search within it
+    local extra_obj
+    extra_obj=$(echo "$json" | sed -n 's/.*"extra"[[:space:]]*:[[:space:]]*{\(.*\)}/\1/p' | head -1)
+    if [[ -n "$extra_obj" ]]; then
+        val=$(echo "$extra_obj" | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1)
+        echo "$val"
+        return
+    fi
+}
+
 # Extract a top-level boolean or string value (unquoted).
 json_extract_value() {
     local json="$1" key="$2"
@@ -217,7 +241,7 @@ handle_post_tool_call() {
 handle_pre_llm_call() {
     local event_json="$1"
     local user_message
-    user_message=$(json_extract_string "$event_json" "user_message")
+    user_message=$(extract_field "$event_json" "user_message")
 
     if [[ -n "$user_message" && ${#user_message} -gt 2 ]]; then
         # Truncate long messages for the bubble
@@ -235,7 +259,7 @@ handle_pre_llm_call() {
 handle_post_llm_call() {
     local event_json="$1"
     local response
-    response=$(json_extract_string "$event_json" "assistant_response" 2>/dev/null || true)
+    response=$(extract_field "$event_json" "assistant_response" 2>/dev/null || true)
 
     if [[ -z "$response" ]]; then
         emit_pet_event "{\"type\": \"mood_change\", \"mood\": \"idle\"}"
@@ -278,8 +302,8 @@ handle_post_llm_call() {
 handle_on_session_start() {
     local event_json="$1"
     local model platform
-    model=$(json_extract_string "$event_json" "model")
-    platform=$(json_extract_string "$event_json" "platform")
+    model=$(extract_field "$event_json" "model")
+    platform=$(extract_field "$event_json" "platform")
 
     local greeting="👋 Session started"
     [[ -n "$model" ]] && greeting="$greeting (${model})"
@@ -307,7 +331,7 @@ handle_on_session_end() {
 handle_post_approval_response() {
     local event_json="$1"
     local choice
-    choice=$(json_extract_string "$event_json" "choice")
+    choice=$(extract_field "$event_json" "choice")
 
     case "$choice" in
         once|session|always)

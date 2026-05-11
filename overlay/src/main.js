@@ -21,6 +21,7 @@ function parseArgs() {
 }
 
 const parsedArgs = parseArgs();
+const platform = parsedArgs.platform || process.platform;
 
 // ─── Cross-platform state / user-data directory ─────────────────────
 function getUserDataDir() {
@@ -127,11 +128,10 @@ function verifyRendererSnapshot(reason) {
 // ─── Window helpers ─────────────────────────────────────────────────
 function bringOverlayToFront(reason) {
   if (!win) return;
-  const currentPlatform = parsedArgs.platform || process.platform;
   try {
     if (win.isMinimized()) win.restore();
     if (!win.isVisible()) win.showInactive();
-    if (currentPlatform === 'linux') linuxSetAbove(reason);
+    if (platform === 'linux') linuxSetAbove(reason);
     else reassertOverlayOnTop(reason);
   } catch (e) {
     console.warn(`[pet-overlay] failed to show existing overlay after ${reason}: ${e.message}`);
@@ -312,12 +312,10 @@ function createWindow() {
   const focusable = process.env.HERMES_PET_FOCUSABLE === '1';
   const clickThrough = process.env.HERMES_PET_CLICK_THROUGH === '1';
   const showUpload = process.env.HERMES_PET_SHOW_UPLOAD === '1' ? '1' : '0';
-  const currentPlatform = parsedArgs.platform || process.platform;
-  console.log(`[pet-overlay] platform ${currentPlatform}`);
-  console.log(`[pet-overlay] always-on-top level ${ALWAYS_ON_TOP_LEVEL}`);
+  console.log(`[pet-overlay] platform ${platform}`);
+  const isLinux = platform === 'linux';
   if (clickThrough) console.log('[pet-overlay] click-through enabled');
 
-  const isLinux = currentPlatform === 'linux';
   const windowOptions = {
     ...WINDOW_SIZE,
     x: pos.x,
@@ -344,7 +342,7 @@ function createWindow() {
   // 'notification' → GNOME treats it as a transient popup, auto-dismisses, and may not render content.
   // 'normal' with frame:false + alwaysOnTop is the safest approach on GNOME.
   // Users can override via HERMES_PET_WINDOW_TYPE env var.
-  if (currentPlatform === 'linux') {
+  if (platform === 'linux') {
     windowOptions.type = process.env.HERMES_PET_WINDOW_TYPE || 'normal';
     console.log(`[pet-overlay] linux window type: ${windowOptions.type}`);
   }
@@ -368,7 +366,7 @@ function createWindow() {
 
   win.once('ready-to-show', () => {
     console.log(`[pet-overlay] final window bounds ${JSON.stringify(win.getBounds())}`);
-    if (currentPlatform === 'linux') {
+    if (platform === 'linux') {
       // On GNOME: Electron sets _NET_WM_BYPASS_COMPOSITOR=2 for transparent windows,
       // which tells Mutter to skip compositing → window invisible.
       // Fix: remove BYPASS_COMPOSITOR BEFORE showing, then set ABOVE via xprop.
@@ -411,9 +409,9 @@ function createWindow() {
     if (moveTimeout) clearTimeout(moveTimeout);
     moveTimeout = setTimeout(persistWindowPosition, 500);
   });
-  win.on('blur', () => { if (currentPlatform === 'linux') linuxSetAbove('blur'); else reassertOverlayOnTop('blur'); });
-  win.on('show', () => { if (currentPlatform === 'linux') linuxSetAbove('show'); else reassertOverlayOnTop('show'); });
-  win.on('restore', () => { if (currentPlatform === 'linux') linuxSetAbove('restore'); else reassertOverlayOnTop('restore'); });
+  win.on('blur', () => { if (platform === 'linux') linuxSetAbove('blur'); else reassertOverlayOnTop('blur'); });
+  win.on('show', () => { if (platform === 'linux') linuxSetAbove('show'); else reassertOverlayOnTop('show'); });
+  win.on('restore', () => { if (platform === 'linux') linuxSetAbove('restore'); else reassertOverlayOnTop('restore'); });
   win.on('closed', () => { dragState = null; win = null; });
 }
 
@@ -433,7 +431,7 @@ app.on('window-all-closed', () => {
 ipcMain.on('minimize-pet', () => { if (win) win.setSize(80, 80); });
 ipcMain.on('restore-pet', () => { if (win) win.setSize(WINDOW_SIZE.width, WINDOW_SIZE.height); });
 ipcMain.on('hide-pet', () => { if (win) win.hide(); });
-ipcMain.on('show-pet', () => { if (win) { win.showInactive(); if (currentPlatform === 'linux') linuxSetAbove('show-pet'); else reassertOverlayOnTop('show-pet'); } });
+ipcMain.on('show-pet', () => { if (win) { win.showInactive(); if (platform === 'linux') linuxSetAbove('show-pet'); else reassertOverlayOnTop('show-pet'); } });
 
 ipcMain.on('pet-drag-start', (_, point) => {
   if (!win || process.env.HERMES_PET_CLICK_THROUGH === '1') return;
@@ -459,7 +457,7 @@ ipcMain.on('pet-drag-end', () => {
   if (!win || !dragState) return;
   dragState = null;
   persistWindowPosition();
-  if (currentPlatform === 'linux') linuxSetAbove('drag-end');
+  if (platform === 'linux') linuxSetAbove('drag-end');
   else reassertOverlayOnTop('drag-end');
   if (DEBUG_DRAG) console.log(`[pet-overlay/drag] end ${JSON.stringify(win.getBounds())}`);
 });
