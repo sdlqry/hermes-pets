@@ -465,13 +465,34 @@ def _launch_bridge_and_overlay(args: argparse.Namespace) -> int:
     env["HERMES_PET_WS_URL"] = f"ws://{host}:{port}"
     env["HERMES_PET_POSITION_FILE"] = str(position_file)
 
-    # --- Linux native path: launch Electron directly ---
+    # --- Linux native path: prefer launcher script, fallback to direct Electron ---
     if _is_linux():
         # Ensure DISPLAY is set for Electron GUI
         if not env.get("DISPLAY"):
             env["DISPLAY"] = ":0"
         env["HERMES_PET_PLATFORM"] = "linux"
 
+        # Try the Linux launcher script first
+        script = _linux_overlay_launcher_script()
+        if script.exists():
+            cmd = [str(script), "start"]
+            if getattr(args, "replace", False):
+                cmd.append("--replace")
+            try:
+                result = subprocess.run(cmd, cwd=str(overlay_dir), env=env, capture_output=True, text=True, timeout=30)
+                if result.stdout:
+                    print(result.stdout, end="")
+                if result.stderr:
+                    print(result.stderr, end="", file=sys.stderr)
+                if result.returncode == 0:
+                    return 0
+                print(f"⚠️ Linux launcher exited with code {result.returncode}; falling back to direct Electron launch.")
+            except Exception as exc:
+                print(f"⚠️ Linux launcher failed: {exc}; falling back to direct Electron launch.")
+        else:
+            print("⚠️ Linux launcher script not found; falling back to direct Electron launch.")
+
+        # Fallback: launch Electron directly
         electron_bin = shutil.which("electron")
         npx_bin = shutil.which("npx")
         candidates: list[list[str]] = []
@@ -484,7 +505,7 @@ def _launch_bridge_and_overlay(args: argparse.Namespace) -> int:
         for cmd in candidates:
             try:
                 subprocess.Popen(cmd, cwd=str(overlay_dir), env=env, **_detached_popen_kwargs())
-                print("🪟 Overlay launch requested (Linux native).")
+                print("🪟 Overlay launch requested (Linux native, direct).")
                 return 0
             except Exception as exc:
                 last_error = exc
@@ -641,8 +662,10 @@ def _run_overlay_launcher(*, port: int, mode: str) -> subprocess.CompletedProces
                 raise PetCLIError(f"Unsupported overlay launcher mode: {mode}")
 
         cmd = [str(script), mode]
+        script_env = os.environ.copy()
+        script_env["HERMES_PET_PORT"] = str(port)
         try:
-            return subprocess.run(cmd, cwd=str(_overlay_dir()), capture_output=True, text=True, timeout=15)
+            return subprocess.run(cmd, cwd=str(_overlay_dir()), env=script_env, capture_output=True, text=True, timeout=15)
         except Exception as exc:
             raise PetCLIError(f"Linux overlay launcher failed: {exc}") from exc
 
