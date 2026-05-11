@@ -5,7 +5,11 @@
   "main": "src/main.js",
   "private": true,
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "start:linux": "electron . --hermes-pet-platform=linux",
+    "start:wsl": "electron . --hermes-pet-platform=wsl",
+    "start:windows": "electron . --hermes-pet-platform=win32",
+    "start:macos": "electron . --hermes-pet-platform=darwin"
   },
   "dependencies": {
     "electron": "^33.0.0",

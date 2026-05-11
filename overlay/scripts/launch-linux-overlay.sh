@@ -325,6 +325,16 @@ PKGJSON
     if [[ "${HERMES_PET_NO_SANDBOX:-}" != "1" ]]; then
         electron_args+=(--no-sandbox)
     fi
+    # Disable GPU when running without sandbox (common in containers/VMs)
+    if [[ "${HERMES_PET_NO_SANDBOX:-}" != "1" ]]; then
+        electron_args+=(--disable-gpu)
+    fi
+    # Pass platform and state dir to Electron main process
+    electron_args+=(--hermes-pet-platform=linux)
+    electron_args+=(--hermes-pet-dir="${STATE_DIR:-$HOME/.hermes_pet}")
+    if [[ -n "${HERMES_PET_PORT:-}" ]]; then
+        electron_args+=(--hermes-pet-bridge-port="${HERMES_PET_PORT}")
+    fi
     electron_args+=("$MAIN_JS")
 
     # Launch Electron in background

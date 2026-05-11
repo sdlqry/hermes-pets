@@ -501,10 +501,24 @@ def _launch_bridge_and_overlay(args: argparse.Namespace) -> int:
         if npx_bin:
             candidates.append([npx_bin, "electron", "src/main.js"])
 
+        # Extra CLI args for cross-platform Electron
+        overlay_args = [
+            f"--hermes-pet-platform=linux",
+            f"--hermes-pet-bridge-port={self._bridge_port}",
+            f"--hermes-pet-dir={self._state_dir}",
+        ]
+        # --disable-gpu is needed when --no-sandbox is used (common in containers/VMs)
+        overlay_args.extend(["--no-sandbox", "--disable-gpu"])
+
         last_error: Exception | None = None
         for cmd in candidates:
             try:
-                subprocess.Popen(cmd, cwd=str(overlay_dir), env=env, **_detached_popen_kwargs())
+                subprocess.Popen(
+                    cmd + overlay_args,
+                    cwd=str(overlay_dir),
+                    env=env,
+                    **_detached_popen_kwargs(),
+                )
                 print("🪟 Overlay launch requested (Linux native, direct).")
                 return 0
             except Exception as exc:

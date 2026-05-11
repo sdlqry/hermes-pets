@@ -4,6 +4,58 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+// ─── Command-line argument parsing ──────────────────────────────────
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const config = {};
+  for (const arg of args) {
+    if (arg.startsWith('--hermes-pet-bridge-port=')) {
+      config.bridgePort = parseInt(arg.split('=')[1], 10);
+    } else if (arg.startsWith('--hermes-pet-dir=')) {
+      config.stateDir = arg.split('=').slice(1).join('=');
+    } else if (arg.startsWith('--hermes-pet-platform=')) {
+      config.platform = arg.split('=')[1];
+    }
+  }
+  return config;
+}
+
+const parsedArgs = parseArgs();
+
+// ─── Cross-platform state / user-data directory ─────────────────────
+function getUserDataDir() {
+  const platform = parsedArgs.platform || process.platform;
+  switch (platform) {
+    case 'linux':
+      return parsedArgs.stateDir
+        || path.join(os.homedir(), '.hermes_pet', 'electron-user-data');
+    case 'win32':
+      return parsedArgs.stateDir
+        || path.join(process.env.LOCALAPPDATA || os.homedir(), 'HermesAgent', 'pet-overlay-electron', 'user-data');
+    case 'darwin':
+      return parsedArgs.stateDir
+        || path.join(os.homedir(), 'Library', 'Application Support', 'hermes-pet-electron');
+    default:
+      return parsedArgs.stateDir
+        || path.join(os.homedir(), '.hermes_pet', 'electron-user-data');
+  }
+}
+
+app.setPath('userData', getUserDataDir());
+app.setName('Hermes Pets Overlay');
+
+// ─── Single instance lock (cross-platform) ──────────────────────────
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  console.log('[pet-overlay] Another instance is already running — quitting.');
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    bringOverlayToFront('second-instance');
+  });
+}
+
+// ─── Globals ─────────────────────────────────────────────────────────
 let win = null;
 let wsClient = null;
 let reconnectTimer = null;
@@ -18,15 +70,71 @@ const MAX_RECONNECT_DELAY_MS = 30000;
 const CONNECTION_LOG_INTERVAL_MS = 30000;
 const ALWAYS_ON_TOP_LEVEL = process.env.HERMES_PET_ALWAYS_ON_TOP_LEVEL || 'screen-saver';
 const WINDOW_SIZE = { width: 280, height: 340 };
-const PET_TITLE = `Hermes Pets Overlay [${process.pid}]`;
+const PET_TITLE = `Hermes Pets Overlay [${parsedArgs.platform || process.platform} ${process.pid}]`;
 const PET_SPECIES = process.env.HERMES_PET_SPECIES || 'cat';
 const DEBUG_EVENTS = process.env.HERMES_PET_DEBUG_EVENTS === '1';
 const DEBUG_ANIMATION = process.env.HERMES_PET_DEBUG_ANIMATION === '1';
 const DEBUG_DRAG = process.env.HERMES_PET_DEBUG_DRAG === '1';
+const VERIFY_FILE = process.env.HERMES_PET_OVERLAY_VERIFY_FILE || '';
 const CUSTOM_SPRITE_DIR = path.join(os.homedir(), '.hermes');
 const CUSTOM_SPRITE_PATH = path.join(CUSTOM_SPRITE_DIR, 'pet_custom.png');
 
 const positionFilePath = () => process.env.HERMES_PET_POSITION_FILE || path.join(os.homedir(), '.hermes', 'pet_position.json');
+
+// ─── Debug & verification helpers (merged from main.windows.js) ─────
+function debugEvent(message, ...args) {
+  if (DEBUG_EVENTS) console.log(`[pet-overlay/events] ${message}`, ...args);
+}
+
+function verifyEvent(type, payload = {}) {
+  if (!VERIFY_FILE) return;
+  try {
+    fs.mkdirSync(path.dirname(VERIFY_FILE), { recursive: true });
+    fs.appendFileSync(
+      VERIFY_FILE,
+      JSON.stringify({ type, pid: process.pid, at: new Date().toISOString(), ...payload }) + '\n',
+      'utf8',
+    );
+  } catch (e) {
+    if (DEBUG_EVENTS) console.warn(`[pet-overlay/events] verify write failed: ${e.message}`);
+  }
+}
+
+function verifyRendererSnapshot(reason) {
+  if (!VERIFY_FILE || !win || win.webContents.isDestroyed()) return;
+  win.webContents.executeJavaScript(`
+    (() => {
+      const smoke = window.__hermesPetRendererSmoke;
+      if (!smoke) return null;
+      const state = smoke.getState();
+      return {
+        species: state.species || '',
+        customPet: state.custom_pet && state.custom_pet.name || '',
+        animation: smoke.getCurrentAnimation(),
+        trayVisible: smoke.isTrayVisible(),
+        trayAttention: smoke.isTrayAttention(),
+        bubbleText: smoke.getBubbleText(),
+        recentTypes: smoke.getRecentEvents().map((event) => event.type),
+      };
+    })()
+  `).then((snapshot) => {
+    if (snapshot) verifyEvent('renderer-snapshot', { reason, snapshot });
+  }).catch((e) => {
+    verifyEvent('renderer-snapshot-error', { reason, error: e.message });
+  });
+}
+
+// ─── Window helpers ─────────────────────────────────────────────────
+function bringOverlayToFront(reason) {
+  if (!win) return;
+  try {
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.showInactive();
+    reassertOverlayOnTop(reason);
+  } catch (e) {
+    console.warn(`[pet-overlay] failed to show existing overlay after ${reason}: ${e.message}`);
+  }
+}
 
 function defaultWindowPosition() {
   const area = screen.getPrimaryDisplay().workArea || screen.getPrimaryDisplay().bounds;
@@ -104,9 +212,17 @@ function reassertOverlayOnTop(reason) {
 function notifyBridgeConnected(connected) {
   if (bridgeConnected === connected) return;
   bridgeConnected = connected;
+  debugEvent(`bridge connected state=${connected}`);
+  verifyEvent('bridge-connected', { connected });
+  setTimeout(() => verifyRendererSnapshot(`bridge-connected:${connected}`), 250);
   if (win) win.webContents.send('bridge-connected', connected);
 }
 
+function emitCustomSprite(pathOrUrl) {
+  if (win) win.webContents.send('custom-sprite-set', pathOrUrl);
+}
+
+// ─── WebSocket bridge connection ────────────────────────────────────
 function scheduleReconnect(url) {
   if (app.isQuitting) return;
   const delay = reconnectDelayMs;
@@ -123,7 +239,8 @@ function scheduleReconnect(url) {
 
 function connectBridge() {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  const bridgePort = process.env.HERMES_PET_PORT || 17473;
+  // Prefer parsedArgs.bridgePort from CLI, fall back to env var, then default
+  const bridgePort = parsedArgs.bridgePort || process.env.HERMES_PET_PORT || 17473;
   const url = process.env.HERMES_PET_WS_URL || `ws://127.0.0.1:${bridgePort}`;
   notifyBridgeConnected(false);
   wsClient = new WebSocket(url);
@@ -132,19 +249,32 @@ function connectBridge() {
     reconnectDelayMs = MIN_RECONNECT_DELAY_MS;
     lastConnectionLogMs = 0;
     console.log(`[pet-overlay] connected to bridge at ${url}`);
+    debugEvent(`bridge open url=${url}`);
     notifyBridgeConnected(true);
   });
 
   wsClient.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw);
-      if (win) win.webContents.send('pet-event', msg);
+      debugEvent(`bridge message type=${msg?.type || 'unknown'}`);
+      if (win) {
+        win.webContents.send('pet-event', msg);
+        verifyEvent('pet-event', {
+          eventType: msg?.type || 'unknown',
+          severity: msg?.severity || '',
+          hasCustomPet: Boolean(msg?.custom_pet),
+        });
+        setTimeout(() => verifyRendererSnapshot(`pet-event:${msg?.type || 'unknown'}`), 250);
+      } else {
+        debugEvent(`dropped renderer event type=${msg?.type || 'unknown'} reason=no-window`);
+      }
     } catch (_) {
       console.error('[pet-overlay] bad bridge message');
     }
   });
 
   wsClient.on('close', () => {
+    debugEvent(`bridge close url=${url}`);
     notifyBridgeConnected(false);
     scheduleReconnect(url);
   });
@@ -157,21 +287,19 @@ function connectBridge() {
   });
 }
 
-function emitCustomSprite(pathOrUrl) {
-  if (win) win.webContents.send('custom-sprite-set', pathOrUrl);
-}
-
+// ─── Window creation ────────────────────────────────────────────────
 function createWindow() {
   if (win) return;
   const pos = loadPosition();
   const focusable = process.env.HERMES_PET_FOCUSABLE === '1';
   const clickThrough = process.env.HERMES_PET_CLICK_THROUGH === '1';
   const showUpload = process.env.HERMES_PET_SHOW_UPLOAD === '1' ? '1' : '0';
-  console.log(`[pet-overlay] platform ${process.platform}`);
+  const currentPlatform = parsedArgs.platform || process.platform;
+  console.log(`[pet-overlay] platform ${currentPlatform}`);
   console.log(`[pet-overlay] always-on-top level ${ALWAYS_ON_TOP_LEVEL}`);
   if (clickThrough) console.log('[pet-overlay] click-through enabled');
 
-  win = new BrowserWindow({
+  const windowOptions = {
     ...WINDOW_SIZE,
     x: pos.x,
     y: pos.y,
@@ -186,7 +314,15 @@ function createWindow() {
     backgroundColor: '#00000000',
     show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
-  });
+  };
+
+  // Linux X11: set window type to dock so it doesn't appear in taskbar
+  // and behaves better with different window managers
+  if (currentPlatform === 'linux') {
+    windowOptions.type = 'dock';
+  }
+
+  win = new BrowserWindow(windowOptions);
 
   win.loadFile(path.join(__dirname, 'renderer.html'), {
     query: { species: PET_SPECIES, showUpload, debugEvents: DEBUG_EVENTS ? '1' : '0', debugAnimation: DEBUG_ANIMATION ? '1' : '0', debugDrag: DEBUG_DRAG ? '1' : '0' },
@@ -198,6 +334,8 @@ function createWindow() {
     if (clickThrough) classes.push('click-through-mode');
     if (process.env.HERMES_PET_DEBUG_SPRITE === '1') classes.push('debug-sprite');
     win.webContents.executeJavaScript(`document.body.classList.add(${classes.map((c) => JSON.stringify(c)).join(',')})`).catch(() => {});
+    verifyEvent('renderer-loaded');
+    setTimeout(() => verifyRendererSnapshot('renderer-loaded'), 250);
     if (fs.existsSync(CUSTOM_SPRITE_PATH)) emitCustomSprite(CUSTOM_SPRITE_PATH);
   });
 
@@ -206,6 +344,7 @@ function createWindow() {
     win.showInactive();
     reassertOverlayOnTop('ready-to-show');
     if (clickThrough) win.setIgnoreMouseEvents(true, { forward: true });
+    verifyEvent('ready-to-show', { bounds: win.getBounds() });
   });
 
   let moveTimeout = null;
@@ -220,7 +359,10 @@ function createWindow() {
   win.on('closed', () => { dragState = null; win = null; });
 }
 
-app.whenReady().then(() => { createWindow(); connectBridge(); });
+// ─── App lifecycle ──────────────────────────────────────────────────
+if (gotTheLock) {
+  app.whenReady().then(() => { createWindow(); connectBridge(); });
+}
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 app.on('window-all-closed', () => {
   app.isQuitting = true;
@@ -229,6 +371,7 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
+// ─── IPC handlers ───────────────────────────────────────────────────
 ipcMain.on('minimize-pet', () => { if (win) win.setSize(80, 80); });
 ipcMain.on('restore-pet', () => { if (win) win.setSize(WINDOW_SIZE.width, WINDOW_SIZE.height); });
 ipcMain.on('hide-pet', () => { if (win) win.hide(); });
@@ -241,7 +384,7 @@ ipcMain.on('pet-drag-start', (_, point) => {
   const bounds = win.getBounds();
   lastSpriteRect = sanitizeSpriteRect(point?.spriteRect, bounds.width, bounds.height) || lastSpriteRect;
   dragState = { startX, startY, bounds, spriteRect: lastSpriteRect };
-  console.log(`[pet-overlay] drag start ${JSON.stringify({ x: bounds.x, y: bounds.y })}`);
+  if (DEBUG_DRAG) console.log(`[pet-overlay/drag] start ${JSON.stringify({ x: bounds.x, y: bounds.y })}`);
 });
 
 ipcMain.on('pet-drag-move', (_, point) => {
@@ -259,7 +402,7 @@ ipcMain.on('pet-drag-end', () => {
   dragState = null;
   persistWindowPosition();
   reassertOverlayOnTop('drag-end');
-  console.log(`[pet-overlay] drag end ${JSON.stringify(win.getBounds())}`);
+  if (DEBUG_DRAG) console.log(`[pet-overlay/drag] end ${JSON.stringify(win.getBounds())}`);
 });
 
 ipcMain.on('save-custom-sprite', (_, srcPath) => {
