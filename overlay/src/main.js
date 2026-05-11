@@ -299,27 +299,38 @@ function createWindow() {
   console.log(`[pet-overlay] always-on-top level ${ALWAYS_ON_TOP_LEVEL}`);
   if (clickThrough) console.log('[pet-overlay] click-through enabled');
 
+  // Linux GNOME: transparent background causes rendering issues (compositor may skip window).
+  // Use a solid background matching the renderer CSS, which already handles transparency via CSS.
+  const isLinux = currentPlatform === 'linux';
   const windowOptions = {
     ...WINDOW_SIZE,
     x: pos.x,
     y: pos.y,
     title: PET_TITLE,
-    transparent: true,
+    transparent: !isLinux,
     frame: false,
     skipTaskbar: true,
-    alwaysOnTop: true,
+    // On Linux GNOME: do NOT set alwaysOnTop in BrowserWindow options — it triggers
+    // override-redirect which makes Mutter hide the window entirely.
+    // Instead, we set _NET_WM_STATE_ABOVE after the window is shown.
+    alwaysOnTop: isLinux ? false : true,
+    alwaysOnTopLevel: isLinux ? undefined : ALWAYS_ON_TOP_LEVEL,
     focusable,
-    hasShadow: false,
+    hasShadow: !isLinux,
     resizable: false,
-    backgroundColor: '#00000000',
+    backgroundColor: isLinux ? '#1e1e2e' : '#00000000',
     show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   };
 
-  // Linux X11: set window type to dock so it doesn't appear in taskbar
-  // and behaves better with different window managers
+  // Linux GNOME workaround: do NOT set 'dock' or 'notification' type.
+  // 'dock' → GNOME hides the window entirely.
+  // 'notification' → GNOME treats it as a transient popup, auto-dismisses, and may not render content.
+  // 'normal' with frame:false + alwaysOnTop is the safest approach on GNOME.
+  // Users can override via HERMES_PET_WINDOW_TYPE env var.
   if (currentPlatform === 'linux') {
-    windowOptions.type = 'dock';
+    windowOptions.type = process.env.HERMES_PET_WINDOW_TYPE || 'normal';
+    console.log(`[pet-overlay] linux window type: ${windowOptions.type}`);
   }
 
   win = new BrowserWindow(windowOptions);
@@ -342,7 +353,25 @@ function createWindow() {
   win.once('ready-to-show', () => {
     console.log(`[pet-overlay] final window bounds ${JSON.stringify(win.getBounds())}`);
     win.showInactive();
-    reassertOverlayOnTop('ready-to-show');
+    if (currentPlatform === 'linux') {
+      // On GNOME: avoid override-redirect by using xprop to set ABOVE state
+      // instead of Electron's built-in alwaysOnTop which triggers OR.
+      // Also remove _NET_WM_BYPASS_COMPOSITOR which GNOME sets on transparent windows.
+      try {
+        const { execSync } = require('child_process');
+        const wid = String(win.getNativeWindowHandle().readUInt32LE());
+        // Use xprop to set _NET_WM_STATE_ABOVE and clear BYPASS_COMPOSITOR
+        execSync(`xprop -id ${wid} -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_ABOVE`, { stdio: 'pipe', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
+        execSync(`xprop -id ${wid} -remove _NET_WM_BYPASS_COMPOSITOR`, { stdio: 'pipe', env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } });
+        console.log('[pet-overlay] linux: set ABOVE via xprop, removed BYPASS_COMPOSITOR');
+      } catch (e) {
+        console.warn(`[pet-overlay] linux ABOVE workaround failed: ${e.message}`);
+        // Fallback: try Electron's API anyway
+        reassertOverlayOnTop('ready-to-show (linux fallback)');
+      }
+    } else {
+      reassertOverlayOnTop('ready-to-show');
+    }
     if (clickThrough) win.setIgnoreMouseEvents(true, { forward: true });
     verifyEvent('ready-to-show', { bounds: win.getBounds() });
   });
