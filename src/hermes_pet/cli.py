@@ -854,7 +854,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     checks: list[bool] = []
 
     print("Hermes Pets doctor")
-    checks.append(_doctor_line("python", bool(sys.executable), sys.executable or "not found"))
+    checks.append(_doctor_line("python", bool(sys.executable), f"{sys.version.split()[0]} ({sys.executable})"))
 
     cli_path = shutil.which("hermes-pet")
     checks.append(
@@ -887,6 +887,34 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         # Linux-specific overlay checks
         linux_launcher = _linux_overlay_launcher_script()
         checks.append(_doctor_line("overlay launcher (linux)", linux_launcher.is_file(), str(linux_launcher)))
+
+        # Linux system libraries required by Electron
+        _required_libs = [
+            ("libgtk-3", "libgtk-3.so.0"),
+            ("libnss3", "libnss3.so"),
+            ("libasound2", "libasound.so.2"),
+            ("libgbm", "libgbm.so.1"),
+        ]
+        missing_libs = []
+        _ldconfig_cache = ""
+        if shutil.which("ldconfig"):
+            _ld_result = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True, timeout=5)
+            if _ld_result.returncode == 0:
+                _ldconfig_cache = _ld_result.stdout
+        for lib_name, lib_file in _required_libs:
+            if _ldconfig_cache and lib_file not in _ldconfig_cache:
+                missing_libs.append(lib_name)
+        if missing_libs:
+            lib_detail = f"missing: {', '.join(missing_libs)} — sudo apt install libgtk-3-0 libnss3 libasound2 libgbm1"
+        else:
+            lib_detail = "all present"
+        checks.append(
+            _doctor_line(
+                "system libs",
+                not missing_libs,
+                lib_detail,
+            )
+        )
 
         # DISPLAY environment variable
         display = os.environ.get("DISPLAY", "")
@@ -922,6 +950,29 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
                 electron_bin or "not found; run: cd overlay && npm install",
             )
         )
+
+        # Overlay file integrity — verify all required files exist
+        missing_files = [rel for rel in _overlay_required_files() if not (overlay_dir / rel).is_file()]
+        checks.append(
+            _doctor_line(
+                "overlay files",
+                not missing_files,
+                "all present" if not missing_files else f"missing: {', '.join(missing_files[:3])}",
+            )
+        )
+
+        # npm dependencies (check node_modules in overlay dir)
+        overlay_node_modules = overlay_dir / "node_modules"
+        has_nm = overlay_node_modules.is_dir()
+        electron_bin_local = overlay_dir / "node_modules" / ".bin" / "electron"
+        has_electron = electron_bin_local.is_file()
+        if has_nm and has_electron:
+            npm_detail = f"electron: {electron_bin_local}"
+        elif has_nm:
+            npm_detail = "node_modules exists, electron binary not found"
+        else:
+            npm_detail = "not installed; run: cd overlay && npm install"
+        checks.append(_doctor_line("npm deps", has_electron, npm_detail))
 
         # Overlay process status
         overlay_pids = _overlay_process_ids()

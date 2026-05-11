@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from base64 import b64encode
 from dataclasses import dataclass
 from html import escape
@@ -512,6 +513,9 @@ def current_custom_pet(base_dir: Path | None = None) -> dict[str, Any] | None:
 
 
 def _is_wsl() -> bool:
+    """Detect whether we are running under Windows Subsystem for Linux."""
+    if sys.platform != "linux":
+        return False
     if os.environ.get("WSL_DISTRO_NAME"):
         return True
     try:
@@ -521,19 +525,30 @@ def _is_wsl() -> bool:
 
 
 def overlay_accessible_path(path: Path) -> str:
-    if not _is_wsl():
-        return str(path)
+    """Return a path string that the Electron overlay can use to access files.
+
+    - On WSL: converts Linux paths to Windows paths via ``wslpath -w``.
+    - On Linux/macOS: resolves symlinks and returns an absolute path.
+    - On other platforms: returns the path as-is.
+    """
+    if _is_wsl():
+        try:
+            result = subprocess.run(
+                ["wslpath", "-w", str(path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            return str(path)
+        converted = result.stdout.strip()
+        return converted or str(path)
+    # Linux / macOS: resolve symlinks and normalise
     try:
-        result = subprocess.run(
-            ["wslpath", "-w", str(path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
+        resolved = path.resolve()
+        return str(resolved)
+    except (OSError, ValueError):
         return str(path)
-    converted = result.stdout.strip()
-    return converted or str(path)
 
 
 def custom_pet_event_payload(base_dir: Path | None = None) -> dict[str, Any] | None:
