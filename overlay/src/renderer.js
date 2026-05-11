@@ -860,7 +860,7 @@ function eventReactionFor(msg) {
   if (msg.type === 'status') {
     return { animation: severity === 'warning' ? 'review' : 'waiting', reactionMs: 650, trayMs: 0 };
   }
-  return { animation: 'bubble_react', reactionMs: 850, trayMs: 0 };
+  return { animation: 'bubble_react', reactionMs: 850, trayMs: 5000 };
 }
 
 function rememberStatus(msg) {
