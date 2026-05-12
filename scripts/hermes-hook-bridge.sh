@@ -164,14 +164,9 @@ emit_pet_event() {
     fi
 
     log_debug "emitting: $event_json"
-    "$BRIDGE_BIN" --emit-json "$event_json" --port "$BRIDGE_PORT" --host "$BRIDGE_HOST" 2>/dev/null
-    local rc=$?
-    if [[ $rc -eq 0 ]]; then
-        log_debug "event sent successfully"
-    else
-        log_warn "bridge returned exit code $rc (bridge may not be running)"
-    fi
-    return $rc
+    "$BRIDGE_BIN" --emit-json "$event_json" --port "$BRIDGE_PORT" --host "$BRIDGE_HOST" 2>/dev/null || true
+    log_debug "event emitted (bridge status: $?)"
+    return 0
 }
 
 # ── Event handlers ────────────────────────────────────────────────────────
