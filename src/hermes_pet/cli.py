@@ -504,8 +504,8 @@ def _launch_bridge_and_overlay(args: argparse.Namespace) -> int:
         # Extra CLI args for cross-platform Electron
         overlay_args = [
             f"--hermes-pet-platform=linux",
-            f"--hermes-pet-bridge-port={self._bridge_port}",
-            f"--hermes-pet-dir={self._state_dir}",
+            f"--hermes-pet-bridge-port={port}",
+            f"--hermes-pet-dir={state_dir}",
         ]
         # --disable-gpu is needed when --no-sandbox is used (common in containers/VMs)
         overlay_args.extend(["--no-sandbox", "--disable-gpu"])
