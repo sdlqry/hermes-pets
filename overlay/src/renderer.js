@@ -399,7 +399,7 @@ let state = {
   xpNext: 100,
   variant: 'normal',
   mood: 'idle',
-  currentStatus: 'Idle',
+  currentStatus: '空闲',
   visible: true,
   shiny: false,
   hat: false,
@@ -575,13 +575,13 @@ function titleCaseText(value) {
 
 function eventText(msg) {
   if (msg.type === 'message_received') {
-    const source = titleCaseText(msg.source || 'message');
-    const sender = singleLineText(msg.sender || 'someone', 60);
+    const source = titleCaseText(msg.source || '消息');
+    const sender = singleLineText(msg.sender || '未知', 60);
     const body = singleLineText(msg.text || '', 180);
-    return body ? source + ' from ' + sender + ': ' + body : source + ' from ' + sender;
+    return body ? source + ' 来自 ' + sender + ': ' + body : source + ' 来自 ' + sender;
   }
   if (msg.text) return singleLineText(msg.text, 220);
-  return String(msg.type || 'Event');
+  return String(msg.type || '事件');
 }
 
 function eventSeverity(msg) {
@@ -710,11 +710,11 @@ function renderRecentEvents() {
   trayAttention = attention;
   if (eventSummaryEl) {
     var parts = [];
-    if (summary.jobs) parts.push(summary.jobs + ' job' + (summary.jobs === 1 ? '' : 's'));
-    if (summary.messages) parts.push(summary.messages + ' msg' + (summary.messages === 1 ? '' : 's'));
-    if (summary.approvals) parts.push(summary.approvals + ' approval' + (summary.approvals === 1 ? '' : 's'));
-    if (summary.briefs) parts.push(summary.briefs + ' brief' + (summary.briefs === 1 ? '' : 's'));
-    eventSummaryEl.textContent = parts.length ? parts.join(' / ') : '0 recent';
+    if (summary.jobs) parts.push(summary.jobs + ' 任务');
+    if (summary.messages) parts.push(summary.messages + ' 消息');
+    if (summary.approvals) parts.push(summary.approvals + ' 审批');
+    if (summary.briefs) parts.push(summary.briefs + ' 简报');
+    eventSummaryEl.textContent = parts.length ? parts.join(' / ') : '无近期事件';
   }
   if (eventTrayEl) {
     eventTrayEl.classList.toggle('attention', trayAttention);
@@ -724,7 +724,7 @@ function renderRecentEvents() {
   if (recentEvents.length === 0) {
     var empty = document.createElement('div');
     empty.className = 'event-row';
-    empty.innerHTML = '<span class="event-icon">-</span><span class="event-text">No recent events</span>';
+    empty.innerHTML = '<span class="event-icon">-</span><span class="event-text">暂无事件</span>';
     eventListEl.appendChild(empty);
     return;
   }
@@ -816,13 +816,13 @@ function shouldShowEventBubble(msg) {
 function bubbleTextForEvent(msg) {
   var text = eventText(msg);
   var prefixByType = {
-    status: 'Status: ',
-    job_started: 'Started: ',
-    job_finished: 'Finished: ',
-    job_failed: 'Failed: ',
-    approval_needed: 'Approval needed: ',
-    message_received: msg.urgent || msg.severity === 'warning' ? 'Urgent message: ' : 'Message: ',
-    daily_brief: 'Daily brief: '
+    status: '状态: ',
+    job_started: '开始: ',
+    job_finished: '完成: ',
+    job_failed: '失败: ',
+    approval_needed: '需要审批: ',
+    message_received: msg.urgent || msg.severity === 'warning' ? '紧急消息: ' : '消息: ',
+    daily_brief: '每日简报: '
   };
   return (prefixByType[msg.type] || '') + text;
 }
@@ -860,20 +860,20 @@ function eventReactionFor(msg) {
   if (msg.type === 'status') {
     return { animation: severity === 'warning' ? 'review' : 'waiting', reactionMs: 650, trayMs: 0 };
   }
-  return { animation: 'bubble_react', reactionMs: 850, trayMs: 5000 };
+  return { animation: 'bubble_react', reactionMs: 850, trayMs: 0 };
 }
 
 function rememberStatus(msg) {
   if (msg.type === 'status') {
     state.currentStatus = eventText(msg);
   } else if (msg.type === 'job_started') {
-    state.currentStatus = 'Working: ' + eventText(msg);
+    state.currentStatus = '工作中: ' + eventText(msg);
   } else if (msg.type === 'job_finished') {
-    state.currentStatus = 'Done: ' + eventText(msg);
+    state.currentStatus = '已完成: ' + eventText(msg);
   } else if (msg.type === 'job_failed') {
-    state.currentStatus = 'Needs attention: ' + eventText(msg);
+    state.currentStatus = '需要关注: ' + eventText(msg);
   } else if (msg.type === 'approval_needed') {
-    state.currentStatus = 'Waiting for approval';
+    state.currentStatus = '等待审批';
   }
 }
 
@@ -1108,7 +1108,7 @@ function handleEvent(msg) {
       setSprite(state.species, state.variant);
       setShiny(state.shiny);
       updateStats();
-      showBubble(`You hatched ${msg.name}!`, 4000);
+      showBubble(`你孵出了 ${msg.name}！`, 4000);
       break;
 
     case 'state':
@@ -1123,7 +1123,7 @@ function handleEvent(msg) {
     case 'custom_pet':
       state.custom_pet = msg.custom_pet || null;
       setSprite(state.species || 'cat', state.variant);
-      if (state.custom_pet) showBubble('Using custom pet ' + state.custom_pet.name, 2500);
+      if (state.custom_pet) showBubble('已加载自定义宠物 ' + state.custom_pet.name, 2500);
       break;
 
     case 'notification_prefs':
@@ -1176,13 +1176,13 @@ if (window.hermesPetAPI) {
   window.hermesPetAPI.onBridgeConnected((connected) => {
     debugEvent(`bridge connected state=${connected}`);
     if (connectionStatusEl) {
-      connectionStatusEl.textContent = connected ? 'Connected' : 'Waiting for Hermes';
+      connectionStatusEl.textContent = connected ? '已连接' : '等待 Hermes 响应';
       connectionStatusEl.classList.toggle('connected', connected);
     }
     if (connected) {
       if (animController.currentState === 'waiting') animController.transition('idle');
     } else {
-      showBubble('Waiting for Hermes...', 4000);
+      showBubble('等待 Hermes 响应...', 4000);
       animController.transition('waiting');
     }
   });

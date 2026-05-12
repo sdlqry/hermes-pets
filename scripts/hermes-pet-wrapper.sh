@@ -38,15 +38,15 @@ export HERMES_PET_DIR="${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 
 # ---------------------------------------------------------------------------
-# launch_overlay — Start Electron in a new session, verify, then return.
-#                   Does NOT wait for Electron to exit (it runs indefinitely).
+# launch_overlay_detached — Start Electron in a new session (for standalone
+#                           or full mode). Does NOT wait for Electron to exit.
+# launch_overlay_foreground — Start Electron as foreground process (for
+#                             systemd Type=simple). Waits for Electron to exit.
 # ---------------------------------------------------------------------------
-launch_overlay() {
-    echo "[hermes-pet] Starting Electron overlay..."
+launch_overlay_detached() {
+    echo "[hermes-pet] Starting Electron overlay (detached)..."
 
     if [[ -x "${ELECTRON_BIN}" ]]; then
-        # Launch Electron in a new session, fully detached.
-        # We do NOT wait for the setsid child — it runs indefinitely.
         setsid "${ELECTRON_BIN}" \
             --no-sandbox \
             --disable-gpu \
@@ -55,20 +55,16 @@ launch_overlay() {
             --hermes-pet-bridge-port="${PORT}" \
             "${MAIN_JS}" \
             </dev/null >/dev/null 2>&1 &
-        # Disown immediately so bash doesn't track it (no zombie, no wait)
         disown
         echo "[hermes-pet] Electron launch command dispatched"
 
-        # Give Electron time to start up and verify it's alive.
-        # In systemd cgroup environments, Electron fork can be slow.
         local retries=10
         local found=false
         while [[ $retries -gt 0 ]]; do
             sleep 1
-            # Check multiple patterns — Electron may appear under different names
             if pgrep -f "electron.*main.js" >/dev/null 2>&1 \
                || pgrep -f "hermes-pet" -u "$(id -u)" >/dev/null 2>&1 \
-               || pgrep -f "main\.js.*hermes-pet" >/dev/null 2>&1; then
+               || pgrep -f "main\\.js.*hermes-pet" >/dev/null 2>&1; then
                 found=true
                 break
             fi
@@ -80,13 +76,10 @@ launch_overlay() {
             return 0
         fi
 
-        # Even if pgrep didn't find it, setsid may have succeeded.
-        # Don't fail — Electron might be starting under a different process name.
         echo "[hermes-pet] Overlay launch dispatched (could not confirm via pgrep)"
         return 0
     fi
 
-    # Fallback to launcher script
     if [[ -x "${LAUNCHER_SCRIPT}" ]]; then
         "${LAUNCHER_SCRIPT}" start
         return $?
@@ -96,11 +89,31 @@ launch_overlay() {
     return 1
 }
 
+launch_overlay_foreground() {
+    echo "[hermes-pet] Starting Electron overlay (foreground)..."
+
+    if [[ -x "${ELECTRON_BIN}" ]]; then
+        # Run Electron as foreground process — systemd manages lifecycle.
+        # stdout/stderr go to journal for diagnostics.
+        exec "${ELECTRON_BIN}" \
+            --no-sandbox \
+            --disable-gpu \
+            --hermes-pet-platform=linux \
+            --hermes-pet-dir="${STATE_DIR}" \
+            --hermes-pet-bridge-port="${PORT}" \
+            "${MAIN_JS}"
+    fi
+
+    echo "[hermes-pet] ERROR: Electron binary not found" >&2
+    return 1
+}
+
 # ---------------------------------------------------------------------------
-# Overlay-only mode — for hermes-pet-overlay.service (Type=oneshot)
+# Overlay-only mode — for hermes-pet-overlay.service (Type=simple)
+# Runs Electron as foreground process; systemd manages lifecycle.
 # ---------------------------------------------------------------------------
 if [[ "${OVERLAY_ONLY}" == "true" ]]; then
-    launch_overlay
+    launch_overlay_foreground
     exit $?
 fi
 
@@ -126,7 +139,7 @@ cleanup() {
 }
 trap cleanup EXIT SIGTERM SIGINT
 
-launch_overlay
+launch_overlay_detached
 
 echo "[hermes-pet] Starting bridge on ws://${HOST}:${PORT}..."
 cd "${PROJECT_DIR}"

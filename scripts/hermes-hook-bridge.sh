@@ -190,13 +190,13 @@ handle_pre_tool_call() {
 
     # Show thinking bubble for research, running for coding
     if [[ "$category" == "researching" ]]; then
-        emit_pet_event "{\"type\": \"bubble\", \"text\": \"🔍 Looking things up...\"}"
+        emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"🔍 搜索资料中...\\\"}"
     elif [[ "$category" == "coding" ]]; then
-        emit_pet_event "{\"type\": \"job_started\", \"text\": \"Running ${tool_name}...\"}"
+        emit_pet_event "{\\\"type\\\": \\\"job_started\\\", \\\"text\\\": \\\"正在执行 ${tool_name}...\\\"}"
     elif [[ "$category" == "delegating" ]]; then
-        emit_pet_event "{\"type\": \"bubble\", \"text\": \"📋 Delegating tasks...\"}"
+        emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"📋 分派任务中...\\\"}"
     elif [[ "$category" == "system" ]]; then
-        emit_pet_event "{\"type\": \"status\", \"text\": \"⚠️ System operation: ${tool_name}\", \"severity\": \"warning\"}"
+        emit_pet_event "{\\\"type\\\": \\\"status\\\", \\\"text\\\": \\\"⚠️ 系统操作: ${tool_name}\\\", \\\"severity\\\": \\\"warning\\\"}"
     fi
 }
 
@@ -217,21 +217,21 @@ handle_post_tool_call() {
 
     case "$emotion" in
         negative)
-            emit_pet_event "{\"type\": \"job_failed\", \"text\": \"${tool_name} hit an error\"}"
+            emit_pet_event "{\\\"type\\\": \\\"job_failed\\\", \\\"text\\\": \\\"${tool_name} 执行出错\\\"}"
             ;;
         warning)
-            emit_pet_event "{\"type\": \"bubble\", \"text\": \"⚠️ Something needs attention...\"}"
+            emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"⚠️ 需要注意...\\\"}"
             ;;
         positive)
-            emit_pet_event "{\"type\": \"job_finished\", \"text\": \"${tool_name} succeeded\"}"
+            emit_pet_event "{\\\"type\\\": \\\"job_finished\\\", \\\"text\\\": \\\"${tool_name} 执行成功\\\"}"
             ;;
         *)
             # Neutral — just show brief status
             local category
             category=$(categorize_tool "$tool_name")
             case "$category" in
-                researching) emit_pet_event "{\"type\": \"bubble\", \"text\": \"📖 Found some info\"}" ;;
-                editing)    emit_pet_event "{\"type\": \"job_finished\", \"text\": \"File updated\"}" ;;
+                researching) emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"📖 查到一些信息\\\"}" ;;
+                editing)    emit_pet_event "{\\\"type\\\": \\\"job_finished\\\", \\\"text\\\": \\\"文件已更新\\\"}" ;;
                 *)          ;; # Skip neutral tool results to avoid spam
             esac
             ;;
@@ -277,23 +277,23 @@ handle_post_llm_call() {
 
     case "$emotion" in
         positive)
-            emit_pet_event "{\"type\": \"mood_change\", \"mood\": \"happy\"}"
+            emit_pet_event "{\\\"type\\\": \\\"mood_change\\\", \\\"mood\\\": \\\"happy\\\"}"
             if [[ -n "$summary" ]]; then
-                emit_pet_event "{\"type\": \"bubble\", \"text\": \"✅ $summary\"}"
+                emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"✅ $summary\\\"}"
             else
-                emit_pet_event "{\"type\": \"job_finished\", \"text\": \"Task completed\"}"
+                emit_pet_event "{\\\"type\\\": \\\"job_finished\\\", \\\"text\\\": \\\"任务完成\\\"}"
             fi
             ;;
         negative)
-            emit_pet_event "{\"type\": \"mood_change\", \"mood\": \"sad\"}"
-            emit_pet_event "{\"type\": \"job_failed\", \"text\": \"Something went wrong\"}"
+            emit_pet_event "{\\\"type\\\": \\\"mood_change\\\", \\\"mood\\\": \\\"sad\\\"}"
+            emit_pet_event "{\\\"type\\\": \\\"job_failed\\\", \\\"text\\\": \\\"出错了\\\"}"
             ;;
         warning)
-            emit_pet_event "{\"type\": \"mood_change\", \"mood\": \"thinking\"}"
-            emit_pet_event "{\"type\": \"bubble\", \"text\": \"⚠️ Check the details...\"}"
+            emit_pet_event "{\\\"type\\\": \\\"mood_change\\\", \\\"mood\\\": \\\"thinking\\\"}"
+            emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"⚠️ 请检查详情...\\\"}"
             ;;
         neutral)
-            emit_pet_event "{\"type\": \"mood_change\", \"mood\": \"idle\"}"
+            emit_pet_event "{\\\"type\\\": \\\"mood_change\\\", \\\"mood\\\": \\\"idle\\\"}"
             # Don't spam bubble for neutral responses
             ;;
     esac
@@ -305,11 +305,11 @@ handle_on_session_start() {
     model=$(extract_field "$event_json" "model")
     platform=$(extract_field "$event_json" "platform")
 
-    local greeting="👋 Session started"
+    local greeting="👋 会话已开始"
     [[ -n "$model" ]] && greeting="$greeting (${model})"
     [[ -n "$platform" ]] && greeting="$greeting via $platform"
 
-    emit_pet_event "{\"type\": \"bubble\", \"text\": \"$greeting\"}"
+    emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"$greeting\\\"}"
     emit_pet_event "{\"type\": \"mood_change\", \"mood\": \"happy\"}"
 }
 
@@ -320,11 +320,11 @@ handle_on_session_end() {
     interrupted=$(json_extract_value "$event_json" "interrupted")
 
     if [[ "$interrupted" == "True" || "$interrupted" == "true" ]]; then
-        emit_pet_event "{\"type\": \"mood_change\", \"mood\": \"sad\"}"
-        emit_pet_event "{\"type\": \"bubble\", \"text\": \"👋 Session interrupted\"}"
+        emit_pet_event "{\\\"type\\\": \\\"mood_change\\\", \\\"mood\\\": \\\"sad\\\"}"
+        emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"👋 会话已中断\\\"}"
     else
-        emit_pet_event "{\"type\": \"mood_change\", \"mood\": \"happy\"}"
-        emit_pet_event "{\"type\": \"bubble\", \"text\": \"🎉 Session complete!\"}"
+        emit_pet_event "{\\\"type\\\": \\\"mood_change\\\", \\\"mood\\\": \\\"happy\\\"}"
+        emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"🎉 会话完成！\\\"}"
     fi
 }
 
@@ -335,13 +335,13 @@ handle_post_approval_response() {
 
     case "$choice" in
         once|session|always)
-            emit_pet_event "{\"type\": \"approval_needed\", \"text\": \"✅ Approved\"}"
+            emit_pet_event "{\\\"type\\\": \\\"approval_needed\\\", \\\"text\\\": \\\"✅ 已批准\\\"}"
             ;;
         deny)
-            emit_pet_event "{\"type\": \"job_failed\", \"text\": \"🚫 Command denied\"}"
+            emit_pet_event "{\\\"type\\\": \\\"job_failed\\\", \\\"text\\\": \\\"🚫 已拒绝\\\"}"
             ;;
         timeout)
-            emit_pet_event "{\"type\": \"bubble\", \"text\": \"⏰ Approval timed out\"}"
+            emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"⏰ 审批超时\\\"}"
             ;;
     esac
 }
@@ -397,22 +397,22 @@ main() {
             handle_on_session_end "$stdin_json"
             ;;
         on_session_reset)
-            emit_pet_event "{\"type\": \"bubble\", \"text\": \"🔄 Session reset\"}"
+            emit_pet_event "{\\\"type\\\": \\\"bubble\\\", \\\"text\\\": \\\"🔄 会话已重置\\\"}"
             ;;
         on_session_finalize)
-            emit_pet_event "{\"type\": \"mood_change\", \"mood\": \"idle\"}"
+            emit_pet_event "{\\\"type\\\": \\\"mood_change\\\", \\\"mood\\\": \\\"idle\\\"}"
             ;;
         post_approval_response)
             handle_post_approval_response "$stdin_json"
             ;;
         pre_approval_request)
-            emit_pet_event "{\"type\": \"approval_needed\", \"text\": \"❓ Needs your approval\"}"
+            emit_pet_event "{\\\"type\\\": \\\"approval_needed\\\", \\\"text\\\": \\\"❓ 等待你的审批\\\"}"
             ;;
         post_api_request)
             # Skip — too frequent, use post_llm_call instead
             ;;
         subagent_stop)
-            emit_pet_event "{\"type\": \"job_finished\", \"text\": \"Subagent done\"}"
+            emit_pet_event "{\\\"type\\\": \\\"job_finished\\\", \\\"text\\\": \\\"子代理完成\\\"}"
             ;;
         *)
             log_debug "unhandled hook event: $hook_event"
